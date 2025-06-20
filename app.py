@@ -6,18 +6,8 @@ from flask_cors import CORS
 app = Flask(__name__)
 
 # Configuração do Banco de Dados
-# Render usa 'postgresql://', mas SQLAlchemy para psycopg2 precisa de 'postgresql+psycopg2://'
-# ou apenas 'postgresql://' com a versão correta do SQLAlchemy/psycopg2.
-# Para compatibilidade, vamos garantir que a URL comece com 'postgresql://' se for o caso.
-# A Render já fornece a URL no formato correto para SQLAlchemy, então o .replace() pode não ser necessário
-# dependendo da sua versão de SQLAlchemy e psycopg2.
-# Manteremos a lógica de substituição para garantir compatibilidade com exemplos anteriores,
-# mas se der erro no deploy, pode ser a primeira coisa a remover.
 database_url = os.environ.get('DATABASE_URL')
 if database_url and database_url.startswith("postgresql://"):
-    # SQLAlchemy 1.4+ e 2.0+ com psycopg2 normalmente aceitam postgresql://
-    # Se você tiver problemas, pode tentar:
-    # app.config['SQLALCHEMY_DATABASE_URI'] = database_url.replace("postgresql://", "postgresql+psycopg2://", 1)
     app.config['SQLALCHEMY_DATABASE_URI'] = database_url
 else:
     # URL para desenvolvimento local
@@ -29,17 +19,8 @@ app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
 db = SQLAlchemy(app)
 CORS(app) # Habilita CORS para todas as rotas
 
-
-# --- NOVO CÓDIGO: CRIAR TABELAS AO INICIAR O APP ---
-# Este bloco garantirá que as tabelas sejam criadas no banco de dados
-# quando o aplicativo iniciar no Render, caso ainda não existam.
-with app.app_context():
-    db.create_all()
-    print(">>> Tabelas verificadas/criadas no banco de dados.")
-# --------------------------------------------------
-
-
 # Definição do Modelo do Banco de Dados
+# ESTA CLASSE DEVE ESTAR DEFINIDA ANTES DE db.create_all()
 class Link(db.Model):
     id = db.Column(db.Integer, primary_key=True)
     name = db.Column(db.String(100), nullable=False)
@@ -56,6 +37,14 @@ class Link(db.Model):
             'url': self.url,
             'icon': self.icon
         }
+
+# --- NOVO POSICIONAMENTO: CRIAR TABELAS AO INICIAR O APP ---
+# Este bloco agora está DEPOIS da definição da classe Link.
+with app.app_context():
+    db.create_all()
+    print(">>> Tabelas verificadas/criadas no banco de dados.")
+# ------------------------------------------------------------
+
 
 # Rotas da API
 
