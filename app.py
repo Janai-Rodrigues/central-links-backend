@@ -1,129 +1,118 @@
-from flask import Flask, jsonify, request, send_from_directory
-from flask_cors import CORS
-from flask_sqlalchemy import SQLAlchemy
 import os
+from flask import Flask, request, jsonify, send_from_directory
+from flask_sqlalchemy import SQLAlchemy
+from flask_cors import CORS
 
 app = Flask(__name__)
+
+# Configuração do Banco de Dados
+# Render usa 'postgresql://', mas SQLAlchemy para psycopg2 precisa de 'postgresql+psycopg2://'
+# ou apenas 'postgresql://' com a versão correta do SQLAlchemy/psycopg2.
+# Para compatibilidade, vamos garantir que a URL comece com 'postgresql://' se for o caso.
+# A Render já fornece a URL no formato correto para SQLAlchemy, então o .replace() pode não ser necessário
+# dependendo da sua versão de SQLAlchemy e psycopg2.
+# Manteremos a lógica de substituição para garantir compatibilidade com exemplos anteriores,
+# mas se der erro no deploy, pode ser a primeira coisa a remover.
+database_url = os.environ.get('DATABASE_URL')
+if database_url and database_url.startswith("postgresql://"):
+    # SQLAlchemy 1.4+ e 2.0+ com psycopg2 normalmente aceitam postgresql://
+    # Se você tiver problemas, pode tentar:
+    # app.config['SQLALCHEMY_DATABASE_URI'] = database_url.replace("postgresql://", "postgresql+psycopg2://", 1)
+    app.config['SQLALCHEMY_DATABASE_URI'] = database_url
+else:
+    # URL para desenvolvimento local
+    app.config['SQLALCHEMY_DATABASE_URI'] = 'postgresql://user:password@localhost/central_links' # Adapte para seu DB local
+    print("AVISO: Usando URL de banco de dados local. Certifique-se de definir DATABASE_URL no Render.")
+
+app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
+
+db = SQLAlchemy(app)
 CORS(app) # Habilita CORS para todas as rotas
 
-# Configuração do banco de dados
-# O Render injeta a DATABASE_URL no ambiente, mas para testes locais,
-# ou se preferir definir explicitamente, você pode usar a URL direta.
-# Certifique-se de que a URL comece com 'postgresql://' se for 'postgres://' do Render
-app.config['SQLALCHEMY_DATABASE_URI'] = os.environ.get('DATABASE_URL') or 'postgresql://cebtral_ferramentas_db_user:Sk02yJqBZ7ab2yZb2u3ogt5upuDWTmqj@dpg-d1acggumcj7s73fd5arg-a.oregon-postgres.render.com/cebtral_ferramentas_db'
-app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
-db = SQLAlchemy(app)
 
-# Modelo do Banco de Dados
+# --- NOVO CÓDIGO: CRIAR TABELAS AO INICIAR O APP ---
+# Este bloco garantirá que as tabelas sejam criadas no banco de dados
+# quando o aplicativo iniciar no Render, caso ainda não existam.
+with app.app_context():
+    db.create_all()
+    print(">>> Tabelas verificadas/criadas no banco de dados.")
+# --------------------------------------------------
+
+
+# Definição do Modelo do Banco de Dados
 class Link(db.Model):
     id = db.Column(db.Integer, primary_key=True)
-    name = db.Column(db.String(120), nullable=False)
-    url = db.Column(db.String(200), nullable=False)
-    icon = db.Column(db.String(200), nullable=True) # Icone agora é opcional
+    name = db.Column(db.String(100), nullable=False)
+    url = db.Column(db.String(255), nullable=False)
+    icon = db.Column(db.String(255), nullable=True) # Nome do arquivo do ícone (ex: 'icone1.png')
 
     def __repr__(self):
         return f'<Link {self.name}>'
 
-# Rota para servir imagens da pasta 'images'
-@app.route('/api/images')
-def get_images():
+    def to_dict(self):
+        return {
+            'id': self.id,
+            'name': self.name,
+            'url': self.url,
+            'icon': self.icon
+        }
+
+# Rotas da API
+
+# Rota para servir imagens de ícones
+@app.route('/images/<path:filename>')
+def serve_image(filename):
+    # Certifique-se de que 'images' é a pasta onde você armazena seus ícones no backend
+    return send_from_directory('images', filename)
+
+# Rota para listar todos os nomes de arquivos de imagem disponíveis
+@app.route('/api/images', methods=['GET'])
+def list_images():
     images_dir = os.path.join(app.root_path, 'images')
     if not os.path.exists(images_dir):
-        return jsonify({"error": "Images directory not found"}), 404
+        return jsonify([])
+    image_files = [f for f in os.listdir(images_dir) if os.path.isfile(os.path.join(images_dir, f))]
+    return jsonify(image_files)
 
-    try:
-        image_files = [f for f in os.listdir(images_dir) if os.path.isfile(os.path.join(images_dir, f))]
-        # Filtra para incluir apenas arquivos de imagem comuns (png, jpg, jpeg, gif, ico)
-        image_files = [f for f in image_files if f.lower().endswith(('.png', '.jpg', '.jpeg', '.gif', '.ico'))]
-        return jsonify(image_files)
-    except Exception as e:
-        return jsonify({"error": str(e)}), 500
 
-# Rota para servir uma imagem específica
-@app.route('/images/<filename>')
-def serve_image(filename):
-    images_dir = os.path.join(app.root_path, 'images')
-    return send_from_directory(images_dir, filename)
-
-# Rota para obter todos os links (GET) e criar um novo link (POST)
+# Rota para adicionar um novo link (POST) e obter todos os links (GET)
 @app.route('/api/links', methods=['GET', 'POST'])
 def handle_links():
     if request.method == 'POST':
-        # Criar um novo link
         data = request.get_json()
-        if not data or not all(k in data for k in ['name', 'url']):
-            return jsonify({"error": "Dados incompletos para o link"}), 400
-        
-        new_link = Link(
-            name=data['name'],
-            url=data['url'],
-            icon=data.get('icon', None) # icon é opcional
-        )
+        new_link = Link(name=data['name'], url=data['url'], icon=data.get('icon'))
         db.session.add(new_link)
         db.session.commit()
-        return jsonify({
-            "id": new_link.id,
-            "name": new_link.name,
-            "url": new_link.url,
-            "icon": new_link.icon
-        }), 201 # 201 Created
-
+        return jsonify(new_link.to_dict()), 201
     elif request.method == 'GET':
-        # Obter todos os links
         links = Link.query.all()
-        links_data = []
-        for link in links:
-            links_data.append({
-                "id": link.id,
-                "name": link.name,
-                "url": link.url,
-                "icon": link.icon
-            })
-        return jsonify(links_data)
+        return jsonify([link.to_dict() for link in links])
 
-
-# Rota para obter, atualizar ou excluir um link específico por ID
+# Rota para gerenciar um link específico por ID (GET, PUT, DELETE)
 @app.route('/api/links/<int:link_id>', methods=['GET', 'PUT', 'DELETE'])
 def handle_single_link(link_id):
-    link = Link.query.get_or_404(link_id) # Busca o link pelo ID, ou retorna 404
+    link = Link.query.get_or_404(link_id)
 
     if request.method == 'GET':
-        # Obter um link específico
-        return jsonify({
-            "id": link.id,
-            "name": link.name,
-            "url": link.url,
-            "icon": link.icon
-        })
-
+        return jsonify(link.to_dict())
     elif request.method == 'PUT':
-        # Atualizar um link existente
         data = request.get_json()
-        if not data:
-            return jsonify({"error": "Nenhum dado fornecido para atualização"}), 400
-
         link.name = data.get('name', link.name)
         link.url = data.get('url', link.url)
         link.icon = data.get('icon', link.icon)
-        
         db.session.commit()
-        return jsonify({
-            "id": link.id,
-            "name": link.name,
-            "url": link.url,
-            "icon": link.icon
-        })
-
+        return jsonify(link.to_dict())
     elif request.method == 'DELETE':
-        # Excluir um link
         db.session.delete(link)
         db.session.commit()
-        return jsonify({"message": "Link excluído com sucesso"}), 204 # 204 No Content
+        return jsonify({'message': 'Link excluído com sucesso'}), 200
 
-# Rota de teste
+# Rota Home
 @app.route('/')
 def home():
-    return "Backend da Central de Links está funcionando!"
+    return "Backend da Central de Links está rodando!" # Mensagem simples para verificar se o backend está ativo
 
 if __name__ == '__main__':
-    app.run(debug=True)
+    # Este bloco só é executado quando você roda app.py diretamente (localmente)
+    # No Render, o servidor web (gunicorn) inicia o app de outra forma.
+    app.run(debug=True, host='0.0.0.0', port=os.environ.get('PORT', 5000))
